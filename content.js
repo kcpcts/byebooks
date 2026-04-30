@@ -587,11 +587,41 @@ chrome.runtime.onMessage.addListener(
                 console.log("Solving automatically");
                 solveAll();
                 setNamedInterval('autoPager', () => {
-                    if (getStatus()) {
-                        nextPage();
-                        setTimeout(() => solveAll(), 1000);
-                    }
-                }, 1000);
+                    if (!getStatus()) return;
+                    // Throttle advances. Even when getStatus() is true, we
+                    // refuse to advance more than once per ~1.2s. Without
+                    // this, reading-only pages (no activities → getStatus
+                    // returns true immediately) cascade through rapidly,
+                    // overwhelming the framework's submission queue and
+                    // tripping the third-party cookie banner's
+                    // MutationObserver — visible as thousands of
+                    // `removeChild` errors in the console.
+                    const now = Date.now();
+                    if (now - (window.__byebooks_lastAdvance || 0) < 1200) return;
+                    window.__byebooks_lastAdvance = now;
+                    const prevUrl = location.href;
+                    nextPage();
+                    // Wait for the SPA navigation to actually commit (URL
+                    // changes), then a short settle for Ember to render the
+                    // new page's activities before running solvers. Without
+                    // this, solveAll often fired on a page that hadn't
+                    // finished rendering and silently no-op'd.
+                    const navStart = Date.now();
+                    const waitForNav = () => {
+                        if (location.href !== prevUrl) {
+                            setTimeout(() => solveAll(), 400);
+                            return;
+                        }
+                        if (Date.now() - navStart > 3000) {
+                            // Stuck (last page, or nextPage didn't take). Run
+                            // solveAll anyway in case state changed.
+                            solveAll();
+                            return;
+                        }
+                        setTimeout(waitForNav, 80);
+                    };
+                    waitForNav();
+                }, 400);
                 break;
             case "solveAll":
                 solveAll();

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "ByeBooks",
+  "description": "Automate ZyBooks participation activities.",
+  "version": "2.0",
+  "permissions": ["scripting"],
+  "host_permissions": ["https://learn.zybooks.com/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://learn.zybooks.com/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon.png"
+  }
+}

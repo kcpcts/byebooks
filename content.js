@@ -23,7 +23,6 @@ function stopAll() {
         clearInterval(id);
     }
     byebooksIntervals.clear();
-    console.log('[ByeBooks] stopAll: cleared all running intervals');
 }
 
 function solveAll() {
@@ -97,36 +96,21 @@ function solveAnimations() {
 }
 
 function mcqQuestionCompleted(q) {
-    // Once a question has been answered correctly, ZyBooks marks the chevron
-    // "Question completed" and keeps it that way even if the user later
-    // selects a wrong option — participation credit is sticky. So this is
-    // also the right gate for "should we touch this question at all".
+    // Question chevron flips to "Question completed" on a correct answer and
+    // stays sticky, so it's also the gate for "should we touch this at all".
     const chev = q.querySelector('.question-chevron');
     return !!chev && chev.getAttribute('aria-label') === 'Question completed';
 }
 
-function mcqQuestionState(q) {
-    const exp = q.querySelector('.zb-explanation');
-    if (!exp) return 'none';
-    if (exp.classList.contains('correct')) return 'correct';
-    if (exp.classList.contains('incorrect')) return 'incorrect';
-    return 'none';
-}
-
 async function solveMultipleChoiceQuestion(q) {
     if (mcqQuestionCompleted(q)) return;
-    // The correct answer isn't leaked in the DOM (server-validated), so we
-    // click options one at a time and watch for the `correct` class to flip
-    // on the question's `.zb-explanation`. Stop the instant we see it —
-    // best case 1 click, worst case N. No more than necessary.
-    const radios = q.querySelectorAll('input[type=radio]');
-    for (const radio of radios) {
-        if (mcqQuestionState(q) === 'correct') return;
-        radio.click();
-        await waitFor(() => mcqQuestionState(q) !== 'none', { timeout: 1500 });
-        if (mcqQuestionState(q) === 'correct') return;
-        await delay(120);
-    }
+    // Participation-mode MCQs credit on any selection. No need to chase the
+    // correct answer — pick the first option and move on.
+    const radio = q.querySelector('input[type=radio]');
+    if (radio) radio.click();
+    // Pace within the framework's ~250ms submission queue debounce so rapid
+    // multi-question pages don't have responses coalesced.
+    await delay(150);
 }
 
 async function solveMultipleChoice() {
@@ -135,7 +119,7 @@ async function solveMultipleChoice() {
         try {
             await solveMultipleChoiceQuestion(q);
         } catch (e) {
-            console.warn('[ByeBooks] MCQ failed:', e);
+            console.warn('[ByeBooks] multiple choice failed:', e);
         }
     }
 }
@@ -222,7 +206,7 @@ async function solveShortAnswer() {
         try {
             await solveShortAnswerQuestion(q);
         } catch (err) {
-            console.warn('[ZyBooks Auto] short-answer question failed:', err);
+            console.warn('[ByeBooks] short answer failed:', err);
         }
     }
 }
@@ -350,15 +334,6 @@ function tileById(sortable, dataId) {
     return sortable.querySelector(`.zb-sortable-item[data-id="${dataId}"]`);
 }
 
-function tileText(tile) {
-    return tile.textContent.replace(/\s+/g, ' ').trim();
-}
-
-function rowLabel(row) {
-    const def = row.querySelector('.definition');
-    return def ? def.textContent.replace(/\s+/g, ' ').trim().split(' ')[0] : '?';
-}
-
 async function moveTile(sortable, dataId, target) {
     // Re-query the tile each time: the framework can re-render it across
     // moves, invalidating any element reference we might be holding.
@@ -372,34 +347,10 @@ async function moveTile(sortable, dataId, target) {
     }, { timeout: 2000 });
 }
 
-
-function dumpTileLocations(sortable, label) {
-    const tiles = sortable.querySelectorAll('.zb-sortable-item');
-    const bank = matchBank(sortable);
-    const rows = matchRows(sortable);
-    console.log(`[ByeBooks] tile dump (${label}): ${tiles.length} tiles in DOM`);
-    for (const t of tiles) {
-        const id = t.dataset.id;
-        const text = tileText(t);
-        const parent = t.parentElement;
-        let where = 'UNKNOWN';
-        if (parent === bank) where = 'bank';
-        else {
-            const row = rows.find(r => rowSlot(r) === parent);
-            if (row) where = `slot ${rowLabel(row)} (${rowState(row)})`;
-            else where = `<detached: ${parent ? parent.className : 'null parent'}>`;
-        }
-        const locked = t.getAttribute('draggable') === 'false' ? ' [locked]' : '';
-        console.log(`[ByeBooks]   ${id} "${text}" → ${where}${locked}`);
-    }
-}
-
 async function solveDefinitionMatch(sortable) {
     const bank = matchBank(sortable);
     if (!bank) return;
     const rows = matchRows(sortable);
-
-    dumpTileLocations(sortable, 'before');
 
     for (let pass = 0; pass < 4; pass++) {
         if (rows.every(r => rowState(r) === 'correct')) break;
@@ -413,14 +364,11 @@ async function solveDefinitionMatch(sortable) {
             // Defensive pre-clear: always start the slot empty. If a previous
             // pass or eviction left a wrong tile here, send it back to the
             // bank before trying anything new. Without this, the framework
-            // refuses drops onto a populated slot ("drag did not register"),
-            // and we'd burn through candidates without making progress.
+            // refuses drops onto a populated slot, and we'd burn through
+            // candidates without making progress.
             const stuck = rowItem(row);
             if (stuck) {
-                if (!await retryMove(sortable, stuck.dataset.id, bank, 3)) {
-                    console.log(`[ByeBooks] pass ${pass}: could not clear slot ${rowLabel(row)}; will retry next pass`);
-                    continue;
-                }
+                if (!await retryMove(sortable, stuck.dataset.id, bank, 3)) continue;
             }
 
             const triedIds = new Set();
@@ -431,53 +379,36 @@ async function solveDefinitionMatch(sortable) {
                 if (!candId) break;
                 triedIds.add(candId);
 
-                const tile = tileById(sortable, candId);
-                if (!tile) continue;
-                console.log(`[ByeBooks] pass ${pass}: try ${tileText(tile)} → slot ${rowLabel(row)}`);
-
-                if (!await moveTile(sortable, candId, slot)) {
-                    console.log('[ByeBooks]  drag did not register, will retry next pass');
-                    continue;
-                }
+                if (!await moveTile(sortable, candId, slot)) continue;
                 await waitFor(() => rowState(row) !== 'empty', { timeout: 2000 });
-                const state = rowState(row);
-                console.log(`[ByeBooks]  → ${state}`);
 
-                if (state === 'correct') { progressed = true; break; }
+                if (rowState(row) === 'correct') { progressed = true; break; }
 
                 // Wrong: evict back to bank with retries. Never park in
                 // another slot — that would create a second visible wrong
                 // answer and the framework refuses drops on populated slots,
-                // which compounds into a cascade of silent drag failures.
-                if (!await retryMove(sortable, candId, bank, 3)) {
-                    console.log('[ByeBooks]  could not evict; abandoning slot this pass');
-                    break;
-                }
+                // cascading into silent drag failures.
+                if (!await retryMove(sortable, candId, bank, 3)) break;
             }
         }
 
         if (!progressed) break;
     }
 
-    const failed = rows.filter(r => rowState(r) !== 'correct');
-    if (failed.length > 0) {
-        console.warn(`[ByeBooks] ${failed.length} slot(s) unsolved after passes; current state:`,
-            failed.map(r => `${rowLabel(r)}=${rowState(r)}`).join(', '));
+    const failed = rows.filter(r => rowState(r) !== 'correct').length;
+    if (failed > 0) {
+        console.warn(`[ByeBooks] match: ${failed} slot(s) could not be solved automatically`);
     }
-    dumpTileLocations(sortable, 'after');
 }
 
 async function solveMatch() {
-    const activities = findMatchActivities();
-    console.log('[ByeBooks] solveMatch: found', activities.length, 'match activity/activities');
-    for (const s of activities) {
+    for (const s of findMatchActivities()) {
         try {
             await solveDefinitionMatch(s);
         } catch (err) {
             console.warn('[ByeBooks] match activity failed:', err);
         }
     }
-    console.log('[ByeBooks] solveMatch: done');
 }
 
 // --- Block ordering (sequential drag-and-drop) ---
@@ -546,7 +477,6 @@ async function solveBlockOrdering(activity) {
             if (!block) break;
             if (block.parentElement === target) { placed = true; break; }
 
-            console.log(`[ByeBooks] block-ordering: drop id=${id} (attempt ${attempt + 1})`);
             await dispatchDrag(block, target);
             placed = await waitFor(() => {
                 const b = blockById(activity, id);
@@ -555,9 +485,9 @@ async function solveBlockOrdering(activity) {
             if (placed) break;
 
             // dispatchDrag selected the block but the drop didn't commit. The
-            // widget needs an explicit click on the drop zone to finalize —
-            // matches the user's manual workaround of "click in the solution
-            // box".
+            // widget uses click-to-commit semantics (the move-above/below
+            // overlay divs), so a click on the drop zone finalizes a pending
+            // move.
             const dropZone = target.querySelector('.move-here') || target;
             await dispatchClick(dropZone);
             placed = await waitFor(() => {
@@ -565,24 +495,144 @@ async function solveBlockOrdering(activity) {
                 return !!b && b.parentElement === target;
             }, { timeout: 1200 });
         }
-
-        if (!placed) {
-            console.warn(`[ByeBooks] block-ordering: id=${id} did not place; data-block-id may not match answer order here`);
-        }
     }
 }
 
 async function solveBlocks() {
-    const activities = findBlockOrderingActivities();
-    console.log(`[ByeBooks] solveBlocks: found ${activities.length} block-ordering activity/activities`);
-    for (const a of activities) {
+    for (const a of findBlockOrderingActivities()) {
         try {
             await solveBlockOrdering(a);
         } catch (err) {
             console.warn('[ByeBooks] block ordering failed:', err);
         }
     }
-    console.log('[ByeBooks] solveBlocks: done');
+}
+
+// --- Page progress ---
+//
+// Counts the per-activity title-bar chevrons. Each chevron is one activity,
+// labeled either "Activity completed" or "Activity not completed". Returns
+// the totals for the popup UI and the on-page overlay.
+function getPageProgress() {
+    const chevrons = document.querySelectorAll('.title-bar-chevron');
+    let total = 0, completed = 0;
+    for (const c of chevrons) {
+        const label = c.getAttribute('aria-label');
+        if (label === 'Activity completed') { total++; completed++; }
+        else if (label === 'Activity not completed') total++;
+    }
+    return { total, completed };
+}
+
+// --- On-page progress overlay ---
+//
+// A Shadow-DOM-isolated floating ring in the bottom-right corner of every
+// learn.zybooks.com page, showing live activity progress. Always present
+// while the content script is loaded (independent of the popup); fades
+// itself out when the page has no activities to count.
+const OVERLAY_HOST_ID = 'byebooks-overlay-host';
+
+function ensureOverlay() {
+    if (document.getElementById(OVERLAY_HOST_ID)) return;
+    const host = document.createElement('div');
+    host.id = OVERLAY_HOST_ID;
+    host.style.cssText = `
+        position: fixed !important;
+        bottom: 20px !important;
+        right: 20px !important;
+        width: auto !important;
+        height: auto !important;
+        z-index: 2147483647 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        pointer-events: auto !important;
+        display: block !important;
+    `;
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            .ring {
+                position: relative;
+                width: 64px; height: 64px;
+                background: rgba(13, 17, 23, 0.92);
+                border: 1px solid rgba(125, 133, 144, 0.18);
+                border-radius: 50%;
+                display: flex; align-items: center; justify-content: center;
+                font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+                color: #e6edf3;
+                user-select: none;
+                box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+                -webkit-backdrop-filter: blur(8px);
+                backdrop-filter: blur(8px);
+                transition: opacity 0.25s, transform 0.15s;
+            }
+            .ring:hover { transform: scale(1.04); }
+            .ring.hidden { opacity: 0; pointer-events: none; transform: scale(0.9); }
+            .ring.complete { color: #39d353; }
+            .ring.complete .fill { stroke: #39d353 !important; }
+            svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+            .pct {
+                font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+                font-size: 13px;
+                font-weight: 600;
+                z-index: 1;
+                letter-spacing: -0.02em;
+            }
+        </style>
+        <div class="ring" id="ring" title="ByeBooks · page progress">
+            <svg viewBox="0 0 64 64">
+                <circle cx="32" cy="32" r="28" stroke="rgba(125,133,144,0.25)" stroke-width="3" fill="none"/>
+                <circle class="fill" cx="32" cy="32" r="28" stroke="#e6edf3" stroke-width="3" fill="none"
+                    stroke-dasharray="175.929" stroke-dashoffset="175.929"
+                    transform="rotate(-90 32 32)" stroke-linecap="round"
+                    style="transition: stroke-dashoffset 0.4s ease, stroke 0.25s;"/>
+            </svg>
+            <span class="pct" id="pct">--</span>
+        </div>
+    `;
+    document.documentElement.appendChild(host);
+}
+
+function updateOverlay() {
+    const host = document.getElementById(OVERLAY_HOST_ID);
+    if (!host || !host.shadowRoot) return;
+    const ring = host.shadowRoot.getElementById('ring');
+    const pct = host.shadowRoot.getElementById('pct');
+    const fill = host.shadowRoot.querySelector('.fill');
+    if (!ring || !pct || !fill) return;
+
+    const { total, completed } = getPageProgress();
+    if (total === 0) {
+        ring.classList.add('hidden');
+        return;
+    }
+    ring.classList.remove('hidden');
+    const fraction = completed / total;
+    const circumference = 2 * Math.PI * 28;
+    fill.setAttribute('stroke-dashoffset', circumference * (1 - fraction));
+    pct.textContent = Math.round(fraction * 100) + '%';
+    ring.classList.toggle('complete', fraction >= 1);
+}
+
+// Boot the overlay and keep it fresh. Stored on `window` so a re-injection
+// of content.js cleans up the previous instance's interval.
+function startOverlay() {
+    ensureOverlay();
+    updateOverlay();
+    if (window.__byebooks_overlayInterval) clearInterval(window.__byebooks_overlayInterval);
+    window.__byebooks_overlayInterval = setInterval(() => {
+        ensureOverlay();
+        updateOverlay();
+    }, 600);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startOverlay);
+} else {
+    startOverlay();
 }
 
 chrome.runtime.onMessage.addListener(
@@ -591,29 +641,26 @@ chrome.runtime.onMessage.addListener(
             case "ping":
                 sendResponse({ ok: true });
                 break;
+            case "getProgress":
+                sendResponse(getPageProgress());
+                break;
             case "solveAuto":
-                console.log("Solving automatically");
                 solveAll();
                 setNamedInterval('autoPager', () => {
                     if (!getStatus()) return;
-                    // Throttle advances. Even when getStatus() is true, we
-                    // refuse to advance more than once per ~1.2s. Without
-                    // this, reading-only pages (no activities → getStatus
-                    // returns true immediately) cascade through rapidly,
-                    // overwhelming the framework's submission queue and
-                    // tripping the third-party cookie banner's
-                    // MutationObserver — visible as thousands of
-                    // `removeChild` errors in the console.
+                    // Throttle advances to once per ~1.2s. Reading-only pages
+                    // (no activities → getStatus returns true immediately)
+                    // would otherwise cascade through, overwhelming the
+                    // framework's submission queue and tripping third-party
+                    // MutationObservers.
                     const now = Date.now();
                     if (now - (window.__byebooks_lastAdvance || 0) < 1200) return;
                     window.__byebooks_lastAdvance = now;
                     const prevUrl = location.href;
                     nextPage();
-                    // Wait for the SPA navigation to actually commit (URL
+                    // Wait for SPA navigation to actually commit (URL
                     // changes), then a short settle for Ember to render the
-                    // new page's activities before running solvers. Without
-                    // this, solveAll often fired on a page that hadn't
-                    // finished rendering and silently no-op'd.
+                    // new page's activities before running solvers.
                     const navStart = Date.now();
                     const waitForNav = () => {
                         if (location.href !== prevUrl) {
@@ -621,8 +668,8 @@ chrome.runtime.onMessage.addListener(
                             return;
                         }
                         if (Date.now() - navStart > 3000) {
-                            // Stuck (last page, or nextPage didn't take). Run
-                            // solveAll anyway in case state changed.
+                            // Stuck (last page, or nextPage didn't take).
+                            // Run solveAll anyway in case state changed.
                             solveAll();
                             return;
                         }
@@ -652,8 +699,6 @@ chrome.runtime.onMessage.addListener(
             case "stopAll":
                 stopAll();
                 break;
-            default:
-                console.log("Unknown message: " + request.message);
         }
     }
 );

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ByeBooks",
-  "description": "Automate ZyBooks participation activities.",
-  "version": "2.0",
+  "description": "Automate ZyBooks participation activities — animations, multiple choice, short answer, drag-and-drop matching, and block ordering.",
+  "version": "3.0",
   "permissions": ["scripting"],
   "host_permissions": ["https://learn.zybooks.com/*"],
   "content_scripts": [

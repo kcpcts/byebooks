@@ -31,6 +31,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'solveSA',
         'solveMatch',
         'solveBlocks',
+        'stopAll',
     ];
     for (const id of buttons) {
         const el = document.getElementById(id);

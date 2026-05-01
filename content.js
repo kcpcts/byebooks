@@ -18,6 +18,14 @@ function setNamedInterval(name, fn, ms) {
     return id;
 }
 
+function stopAll() {
+    for (const id of byebooksIntervals.values()) {
+        clearInterval(id);
+    }
+    byebooksIntervals.clear();
+    console.log('[ByeBooks] stopAll: cleared all running intervals');
+}
+
 function solveAll() {
     solveAnimations();
     solveMultipleChoice();
@@ -640,6 +648,9 @@ chrome.runtime.onMessage.addListener(
                 break;
             case "solveBlocks":
                 solveBlocks();
+                break;
+            case "stopAll":
+                stopAll();
                 break;
             default:
                 console.log("Unknown message: " + request.message);
